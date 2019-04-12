@@ -30,7 +30,7 @@ Support filtering database and collection namespace with whitelist and blacklist
 # Global ID
 ---
 In Aliyun internal version, global id(also called gid) is supported which marks the id of the database. It can be used to avoid loop when two databases become backup of each other. Mongo-Shake only fetches the oplogs equal to source database id, all the oplogs are be fetched when no gid gave. For current opensource version, it's not supported limited by the modification of MongoDB kernel.
-If you want to build active-active replication without `gid` supported, please visit [FAQ document](https://github.com/aliyun/mongo-shake/wiki/FAQ) to see more details.
+If you want to build active-active replication without `gid` supported, please visit [FAQ document](https://github.com/alibaba/MongoShake/wiki/FAQ) to see more details.
 
 # Tunnel
 ---
@@ -62,7 +62,7 @@ version rules: a.b.c.
 | branch name | rules |
 | - | :- |
 | master | master branch, do not allowed push code. store the latest stable version. |
-| develop | develop branch. all the bellowing branches fork from this. |
+| **develop**(main branch) | develop branch. all the bellowing branches fork from this. |
 | feature-\* | new feature branch. forked from develop branch and then merge back after finish developing, testing, and code review. |
 | bugfix-\* | bugfix branch. forked from develop branch and then merge back after finish developing, testing, and code review. |
 | improve-\* | improvement branch. forked from develop branch and then merge back after finish developing, testing, and code review.  |
@@ -82,8 +82,8 @@ add tag when releasing: "release-v{version}-{date}". for example: "release-v1.0.
 ---
 We also provide some tools for synchronization in Shake series.<br>
 
-* [mongo-shake](https://github.com/aliyun/mongo-shake): mongodb data synchronization tool.
-* [redis-shake](https://github.com/aliyun/redis-shake): redis data synchronization tool.
-* [redis-full-check](https://github.com/aliyun/redis-full-check): redis data synchronization verification tool.
+* [MongoShake](https://github.com/aliyun/MongoShake): mongodb data synchronization tool.
+* [RedisShake](https://github.com/aliyun/RedisShake): redis data synchronization tool.
+* [RedisFullCheck](https://github.com/aliyun/RedisFullCheck): redis data synchronization verification tool.
 
 Plus, we have a WeChat group so that users can join and discuss, but the group user number is limited. So please add my WeChat number: `vinllen_xingge` first, and I will add you to this group.<br>
