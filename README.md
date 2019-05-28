@@ -2,6 +2,8 @@ This is a brief introduction of Mongo-Shake, please visit [english wiki](https:/
 
 *  [English document](https://github.com/aliyun/mongo-shake/wiki/MongoShake-Detailed-Documentation)
 *  [Chinese document](https://yq.aliyun.com/articles/603329)
+*  [第一次使用，如何配置](https://github.com/alibaba/MongoShake/wiki/%E7%AC%AC%E4%B8%80%E6%AC%A1%E4%BD%BF%E7%94%A8%EF%BC%8C%E5%A6%82%E4%BD%95%E8%BF%9B%E8%A1%8C%E9%85%8D%E7%BD%AE%EF%BC%9F)
+*  [Tutorial](https://github.com/alibaba/MongoShake/wiki/tutorial-about-how-to-set-up)
 *  [FAQ document](https://github.com/aliyun/mongo-shake/wiki/FAQ)
 *  [Performance test document](https://github.com/aliyun/mongo-shake/wiki/MongoShake-Performance-Document)
 *  [WeChat discuss group](https://github.com/aliyun/mongo-shake#shake-series-tool)
@@ -56,7 +58,7 @@ Please see the detail documents listed at the beginning if you want to see more 
 version rules: a.b.c.
 
 *  a: major version
-*  b: minor version. even number means stable version.
+*  b: minor version. **even number means stable version**. e.g. 1.2.x, 1.4.x, 2.0.x are stable while 1.5.x, 2.1.x aren't.
 *  c: bugfix version
 
 | branch name | rules |
