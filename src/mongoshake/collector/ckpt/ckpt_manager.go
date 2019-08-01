@@ -10,7 +10,6 @@ import (
 
 	"mongoshake/collector/configure"
 	"mongoshake/common"
-	"mongoshake/dbpool"
 
 	LOG "github.com/vinllen/log4go"
 	"github.com/vinllen/mgo"
@@ -21,6 +20,7 @@ const (
 	StorageTypeAPI            = "api"
 	StorageTypeDB             = "database"
 	CheckpointDefaultDatabase = utils.AppDatabase
+	CheckpointAdminDatabase   = "admin"
 	CheckpointName            = "name"
 
 	MajorityWriteConcern = "majority"
@@ -43,7 +43,7 @@ type CheckpointManager struct {
 	delegate CheckpointOperation
 }
 
-func NewCheckpointManager(name string) *CheckpointManager {
+func NewCheckpointManager(name string, startPosition int64) *CheckpointManager {
 	newManager := &CheckpointManager{}
 
 	switch conf.Options.ContextStorage {
@@ -51,16 +51,19 @@ func NewCheckpointManager(name string) *CheckpointManager {
 		newManager.delegate = &HttpApiCheckpoint{
 			Checkpoint: Checkpoint{
 				Name:          name,
-				StartPosition: conf.Options.ContextStartPosition,
+				StartPosition: startPosition,
 			},
 			URL: conf.Options.ContextAddress,
 		}
 	case StorageTypeDB:
 		db := CheckpointDefaultDatabase
+		if conf.Options.IsShardCluster() {
+			db = CheckpointAdminDatabase
+		}
 		newManager.delegate = &MongoCheckpoint{
 			Checkpoint: Checkpoint{
 				Name:          name,
-				StartPosition: conf.Options.ContextStartPosition,
+				StartPosition: startPosition,
 			},
 			DB:    db,
 			URL:   conf.Options.ContextStorageUrl,
@@ -100,7 +103,7 @@ type CheckpointOperation interface {
 type MongoCheckpoint struct {
 	Checkpoint
 
-	Conn        *dbpool.MongoConn
+	Conn        *utils.MongoConn
 	QueryHandle *mgo.Collection
 
 	// connection info
@@ -111,7 +114,7 @@ type MongoCheckpoint struct {
 func (ckpt *MongoCheckpoint) ensureNetwork() bool {
 	// make connection if we don't already established
 	if ckpt.Conn == nil {
-		if conn, err := dbpool.NewMongoConn(ckpt.URL, true); err == nil {
+		if conn, err := utils.NewMongoConn(ckpt.URL, utils.ConnectModePrimary, true); err == nil {
 			ckpt.Conn = conn
 			ckpt.QueryHandle = conn.Session.DB(ckpt.DB).C(ckpt.Table)
 		} else {

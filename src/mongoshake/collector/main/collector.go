@@ -32,9 +32,10 @@ func main() {
 	// argument options
 	configuration := flag.String("conf", "", "configure file absolute path")
 	verbose := flag.Bool("verbose", false, "show logs on console")
+	version := flag.Bool("version", false, "show version")
 	flag.Parse()
 
-	if *configuration == "" {
+	if *configuration == "" || *version == true {
 		fmt.Println(utils.BRANCH)
 		panic(Exit{0})
 	}
@@ -50,12 +51,15 @@ func main() {
 		crash(fmt.Sprintf("Configure file %s parse failed. %v", *configuration, err), -2)
 	}
 
+	utils.InitialLogger(conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose)
+
 	// verify collector options and revise
 	if err = sanitizeOptions(); err != nil {
 		crash(fmt.Sprintf("Conf.Options check failed: %s", err.Error()), -4)
 	}
 
-	utils.InitialLogger(conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose)
+	conf.Options.Version = utils.BRANCH
+
 	nimo.Profiling(int(conf.Options.SystemProfile))
 	nimo.RegisterSignalForProfiling(syscall.SIGUSR2)
 	nimo.RegisterSignalForPrintStack(syscall.SIGUSR1, func(bytes []byte) {
@@ -76,7 +80,7 @@ func startup() {
 	// initialize http api
 	utils.InitHttpApi(conf.Options.HTTPListenPort)
 	coordinator := &collector.ReplicationCoordinator{
-		Sources: make([]*collector.MongoSource, len(conf.Options.MongoUrls)),
+		Sources: make([]*utils.MongoSource, len(conf.Options.MongoUrls)),
 	}
 
 	utils.HttpApi.RegisterAPI("/conf", nimo.HttpGet, func([]byte) interface{} {
@@ -84,10 +88,10 @@ func startup() {
 	})
 
 	for i, src := range conf.Options.MongoUrls {
-		coordinator.Sources[i] = new(collector.MongoSource)
+		coordinator.Sources[i] = new(utils.MongoSource)
 		coordinator.Sources[i].URL = src
 		if len(conf.Options.OplogGIDS) != 0 {
-			coordinator.Sources[i].Gid = conf.Options.OplogGIDS
+			coordinator.Sources[i].Gids = conf.Options.OplogGIDS
 		}
 	}
 
@@ -120,22 +124,26 @@ func sanitizeOptions() error {
 	if len(conf.Options.MongoUrls) == 0 {
 		return errors.New("mongo_urls were empty")
 	}
-	if len(conf.Options.MongoUrls) == 1 && conf.Options.ContextStorageUrl != "" {
-		return errors.New("storage server should not be configured while single mongo server")
+	if conf.Options.ContextStorageUrl == "" {
+		if len(conf.Options.MongoUrls) == 1 {
+			conf.Options.ContextStorageUrl = conf.Options.MongoUrls[0]
+		} else if len(conf.Options.MongoUrls) > 1 {
+			return errors.New("storage server should be configured while using mongo shard servers")
+		}
 	}
-	if len(conf.Options.MongoUrls) > 1 && conf.Options.ContextStorageUrl == "" {
-		return errors.New("storage server should be configured while mongo shard servers")
-	}
-	if len(conf.Options.MongoUrls) > 1 && conf.Options.WorkerNum != len(conf.Options.MongoUrls) {
-		return errors.New("replication worker should be equal to count of mongo_urls while multi sources (shard)")
+	if len(conf.Options.MongoUrls) > 1 {
+		if conf.Options.WorkerNum != len(conf.Options.MongoUrls) {
+			LOG.Warn("replication worker should be equal to count of mongo_urls while multi sources (shard), set worker = %v",
+				len(conf.Options.MongoUrls))
+			conf.Options.WorkerNum = len(conf.Options.MongoUrls)
+		}
+		if conf.Options.ReplayerDMLOnly == false {
+			return errors.New("DDL is not support for sharding, pleasing waiting")
+		}
 	}
 	// avoid the typo of mongo urls
 	if utils.HasDuplicated(conf.Options.MongoUrls) {
 		return errors.New("mongo urls were duplicated")
-	}
-	if len(conf.Options.MongoUrls) == 1 {
-		// use current mongo source server as context storage server
-		conf.Options.ContextStorageUrl = conf.Options.MongoUrls[0]
 	}
 	if conf.Options.CollectorId == "" {
 		return errors.New("collector id should not be empty")
@@ -152,7 +160,7 @@ func sanitizeOptions() error {
 		return errors.New("shard key type is unknown")
 	}
 	if conf.Options.SyncerReaderBufferTime == 0 {
-		return errors.New("syncer buffer time can't be 0")
+		conf.Options.SyncerReaderBufferTime = 1
 	}
 	if conf.Options.WorkerNum <= 0 || conf.Options.WorkerNum > 256 {
 		return errors.New("worker numeric is not valid")
@@ -187,6 +195,10 @@ func sanitizeOptions() error {
 	if len(conf.Options.TunnelAddress) == 0 && conf.Options.Tunnel != "mock" {
 		return errors.New("tunnel address is illegal")
 	}
+	if conf.Options.SyncMode == "" {
+		conf.Options.SyncMode = "oplog" // default
+	}
+
 	// judge the replayer configuration when tunnel type is "direct"
 	if conf.Options.Tunnel == "direct" {
 		if len(conf.Options.TunnelAddress) > conf.Options.WorkerNum {
@@ -201,6 +213,20 @@ func sanitizeOptions() error {
 			return errors.New("collision write strategy is neither db nor sdk nor none")
 		}
 		conf.Options.ReplayerCollisionEnable = conf.Options.ReplayerExecutor != 1
+	} else {
+		if conf.Options.SyncMode != "oplog" {
+			return errors.New("document replication only support direct tunnel type")
+		}
+	}
+
+	if conf.Options.SyncMode != "oplog" && conf.Options.SyncMode != "document" && conf.Options.SyncMode != "all" {
+		return fmt.Errorf("unknown sync_mode[%v]", conf.Options.SyncMode)
+	}
+
+	if conf.Options.MongoConnectMode != utils.ConnectModePrimary &&
+			conf.Options.MongoConnectMode != utils.ConnectModeSecondaryPreferred &&
+			conf.Options.MongoConnectMode != utils.ConnectModeStandalone {
+		return fmt.Errorf("unknown mongo_connect_mode[%v]", conf.Options.MongoConnectMode)
 	}
 
 	return nil

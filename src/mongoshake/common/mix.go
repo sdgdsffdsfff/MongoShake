@@ -82,6 +82,10 @@ func ExtractMongoTimestamp(ts interface{}) int64 {
 	return 0
 }
 
+func ExtractTimestampForLog(ts interface{}) string {
+	return fmt.Sprintf("%v(%v)", ts, ExtractMongoTimestamp(ts))
+}
+
 func Int64ToString(v int64) string {
 	return strconv.FormatInt(v, 10)
 }
@@ -162,14 +166,14 @@ func Welcome() {
 		`______________________________
 \                             \           _         ______ |
  \                             \        /   \___-=O'/|O'/__|
-  \       Here we go !!!        \_______\          / | /    )
+  \ MongoShake, Here we go !!!  \_______\          / | /    )
   /                             /        '/-==__ _/__|/__=-|  -GM
  /                             /         *             \ | |
 /                             /                        (o)
 ------------------------------
 `
-
-	LOG.Warn(fmt.Sprintf("\n%s", welcome))
+	startMsg := "if you have any problem, please visit https://github.com/alibaba/MongoShake/wiki/FAQ"
+	LOG.Warn(fmt.Sprintf("\n%s\n%s\n", welcome, startMsg))
 }
 
 func Goodbye() {
