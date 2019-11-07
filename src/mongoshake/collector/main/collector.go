@@ -1,3 +1,5 @@
+// +build darwin linux windows
+
 package main
 
 import (
@@ -6,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"strconv"
 
 	"mongoshake/collector"
 	"mongoshake/collector/ckpt"
@@ -15,13 +18,14 @@ import (
 	"mongoshake/modules"
 	"mongoshake/oplog"
 	"mongoshake/quorum"
+	"mongoshake/collector/filter"
 
-	LOG "github.com/vinllen/log4go"
 	"github.com/gugemichael/nimo4go"
+	LOG "github.com/vinllen/log4go"
 	"github.com/vinllen/mgo/bson"
 )
 
-type Exit struct {Code int}
+type Exit struct{ Code int }
 
 func main() {
 	var err error
@@ -51,24 +55,32 @@ func main() {
 		crash(fmt.Sprintf("Configure file %s parse failed. %v", *configuration, err), -2)
 	}
 
-	utils.InitialLogger(conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose)
-
 	// verify collector options and revise
 	if err = sanitizeOptions(); err != nil {
 		crash(fmt.Sprintf("Conf.Options check failed: %s", err.Error()), -4)
 	}
 
+	if err := utils.InitialLogger(conf.Options.LogDirectory, conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose); err != nil {
+		crash(fmt.Sprintf("initial log.dir[%v] log.name[%v] failed[%v].", conf.Options.LogDirectory,
+			conf.Options.LogFileName, err), -2)
+	}
+
 	conf.Options.Version = utils.BRANCH
 
 	nimo.Profiling(int(conf.Options.SystemProfile))
-	nimo.RegisterSignalForProfiling(syscall.SIGUSR2)
-	nimo.RegisterSignalForPrintStack(syscall.SIGUSR1, func(bytes []byte) {
-		LOG.Info(string(bytes))
-	})
+	signalProfile, _ := strconv.Atoi(utils.SIGNALPROFILE)
+	signalStack, _ := strconv.Atoi(utils.SIGNALSTACK)
+	if signalProfile > 0 {
+		nimo.RegisterSignalForProfiling(syscall.Signal(signalProfile)) // syscall.SIGUSR2
+		nimo.RegisterSignalForPrintStack(syscall.Signal(signalStack), func(bytes []byte) { // syscall.SIGUSR1
+			LOG.Info(string(bytes))
+		})
+	}
+
 	utils.Welcome()
 
 	// get exclusive process lock and write pid
-	if utils.WritePidById(conf.Options.CollectorId) {
+	if utils.WritePidById(conf.Options.LogDirectory, conf.Options.CollectorId) {
 		startup()
 	}
 }
@@ -101,8 +113,11 @@ func startup() {
 		crash(fmt.Sprintf("Oplog Tailer initialize failed: %v", err), -6)
 	}
 
-	if err := utils.HttpApi.Listen(); err != nil {
-		LOG.Critical("Coordinator http api listen failed. %v", err)
+	// if the sync mode is "document", mongoshake should exit here.
+	if conf.Options.SyncMode != collector.SYNCMODE_DOCUMENT {
+		if err := utils.HttpApi.Listen(); err != nil {
+			LOG.Critical("Coordinator http api listen failed. %v", err)
+		}
 	}
 }
 
@@ -121,6 +136,20 @@ func selectLeader() {
 }
 
 func sanitizeOptions() error {
+	// compatible with old version
+	if len(conf.Options.LogFileNameOld) != 0 {
+		conf.Options.LogFileName = conf.Options.LogFileNameOld
+	}
+	if len(conf.Options.LogLevelOld) != 0 {
+		conf.Options.LogLevel = conf.Options.LogLevelOld
+	}
+	if conf.Options.LogBufferOld == true {
+		conf.Options.LogBuffer = conf.Options.LogBufferOld
+	}
+	if len(conf.Options.LogFileName) == 0 {
+		return fmt.Errorf("log.name[%v] shouldn't be empty", conf.Options.LogFileName)
+	}
+
 	if len(conf.Options.MongoUrls) == 0 {
 		return errors.New("mongo_urls were empty")
 	}
@@ -133,8 +162,8 @@ func sanitizeOptions() error {
 	}
 	if len(conf.Options.MongoUrls) > 1 {
 		if conf.Options.WorkerNum != len(conf.Options.MongoUrls) {
-			LOG.Warn("replication worker should be equal to count of mongo_urls while multi sources (shard), set worker = %v",
-				len(conf.Options.MongoUrls))
+			//LOG.Warn("replication worker should be equal to count of mongo_urls while multi sources (shard), set worker = %v",
+			//	len(conf.Options.MongoUrls))
 			conf.Options.WorkerNum = len(conf.Options.MongoUrls)
 		}
 		if conf.Options.ReplayerDMLOnly == false {
@@ -151,8 +180,10 @@ func sanitizeOptions() error {
 	if conf.Options.HTTPListenPort <= 1024 && conf.Options.HTTPListenPort > 0 {
 		return errors.New("http listen port too low numeric")
 	}
-	if conf.Options.CheckpointInterval <= 0 {
+	if conf.Options.CheckpointInterval < 0 {
 		return errors.New("checkpoint batch size is negative")
+	} else if conf.Options.CheckpointInterval  == 0 {
+		conf.Options.CheckpointInterval = 5000 // set default to 5 seconds
 	}
 	if conf.Options.ShardKey != oplog.ShardByNamespace &&
 		conf.Options.ShardKey != oplog.ShardByID &&
@@ -186,6 +217,11 @@ func sanitizeOptions() error {
 		len(conf.Options.FilterNamespaceWhite) != 0 {
 		return errors.New("at most one of black lists and white lists option can be given")
 	}
+	if len(conf.Options.FilterPassSpecialDb) != 0 {
+		// init ns
+		filter.InitNs(conf.Options.FilterPassSpecialDb)
+	}
+
 	conf.Options.HTTPListenPort = utils.MayBeRandom(conf.Options.HTTPListenPort)
 	conf.Options.SystemProfile = utils.MayBeRandom(conf.Options.SystemProfile)
 
@@ -204,8 +240,9 @@ func sanitizeOptions() error {
 		if len(conf.Options.TunnelAddress) > conf.Options.WorkerNum {
 			return errors.New("then length of tunnel_address with type 'direct' shouldn't bigger than worker number")
 		}
-		if conf.Options.ReplayerExecutor < 1 {
-			return errors.New("executor number should be large than 1")
+		if conf.Options.ReplayerExecutor <= 0 {
+			conf.Options.ReplayerExecutor = 1
+			// return errors.New("executor number should be large than 1")
 		}
 		if conf.Options.ReplayerConflictWriteTo != executor.DumpConflictToDB &&
 			conf.Options.ReplayerConflictWriteTo != executor.DumpConflictToSDK &&
@@ -224,8 +261,8 @@ func sanitizeOptions() error {
 	}
 
 	if conf.Options.MongoConnectMode != utils.ConnectModePrimary &&
-			conf.Options.MongoConnectMode != utils.ConnectModeSecondaryPreferred &&
-			conf.Options.MongoConnectMode != utils.ConnectModeStandalone {
+		conf.Options.MongoConnectMode != utils.ConnectModeSecondaryPreferred &&
+		conf.Options.MongoConnectMode != utils.ConnectModeStandalone {
 		return fmt.Errorf("unknown mongo_connect_mode[%v]", conf.Options.MongoConnectMode)
 	}
 

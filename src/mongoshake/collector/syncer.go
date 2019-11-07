@@ -84,12 +84,12 @@ type OplogSyncer struct {
  * The reason we split pending queue and logs queue is to improve the performance.
  */
 func NewOplogSyncer(
-		coordinator *ReplicationCoordinator,
-		replset string,
-		startPosition int64,
-		fullSyncFinishPosition int64,
-		mongoUrl string,
-		gids []string) *OplogSyncer {
+	coordinator *ReplicationCoordinator,
+	replset string,
+	startPosition int64,
+	fullSyncFinishPosition int64,
+	mongoUrl string,
+	gids []string) *OplogSyncer {
 	syncer := &OplogSyncer{
 		coordinator:            coordinator,
 		replset:                replset,
@@ -130,8 +130,8 @@ func NewOplogSyncer(
 
 func (sync *OplogSyncer) init() {
 	sync.replMetric = utils.NewMetric(sync.replset, utils.METRIC_CKPT_TIMES|
-		utils.METRIC_TUNNEL_TRAFFIC|utils.METRIC_LSN_CKPT|utils.METRIC_SUCCESS|
-		utils.METRIC_TPS|utils.METRIC_RETRANSIMISSION)
+		utils.METRIC_TUNNEL_TRAFFIC| utils.METRIC_LSN_CKPT| utils.METRIC_SUCCESS|
+		utils.METRIC_TPS| utils.METRIC_RETRANSIMISSION)
 	sync.replMetric.ReplStatus.Update(utils.WorkGood)
 
 	sync.RestAPI()
@@ -214,13 +214,13 @@ func (sync *OplogSyncer) startBatcher() {
 				}
 
 				// pass only if all received oplog are filtered for {FilterCheckpointCheckInterval} seconds.
-				if now.After(filterCheckTs.Add(FilterCheckpointCheckInterval * time.Second)) == false {
+				if now.After(filterCheckTs.Add(FilterCheckpointCheckInterval*time.Second)) == false {
 					return
 				}
 
 				checkpointTs := utils.ExtractMongoTimestamp(sync.ckptManager.Get().Timestamp)
 				filterNewestTs := utils.ExtractMongoTimestamp(filterLog.Timestamp)
-				if filterNewestTs - FilterCheckpointGap > checkpointTs {
+				if filterNewestTs-FilterCheckpointGap > checkpointTs {
 					// if checkpoint has not been update for {FilterCheckpointGap} seconds, update
 					// checkpoint mandatory.
 					newestTs = filterLog.Timestamp
@@ -319,7 +319,7 @@ func (sync *OplogSyncer) deserializer(index int) {
 // only master(maybe several mongo-shake starts) can poll oplog.
 func (sync *OplogSyncer) poll() {
 	// we should reload checkpoint. in case of other collector
- 	// has fetched oplogs when master quorum leader election
+	// has fetched oplogs when master quorum leader election
 	// happens frequently. so we simply reload.
 	checkpoint := sync.ckptManager.Get()
 	if checkpoint == nil {
@@ -431,6 +431,7 @@ func (sync *OplogSyncer) RestAPI() {
 		Logs        uint64     `json:"logs_get"`
 		LogsRepl    uint64     `json:"logs_repl"`
 		LogsSuccess uint64     `json:"logs_success"`
+		Tps         uint64     `json:"tps"`
 		Lsn         *MongoTime `json:"lsn"`
 		LsnAck      *MongoTime `json:"lsn_ack"`
 		LsnCkpt     *MongoTime `json:"lsn_ckpt"`
@@ -445,6 +446,7 @@ func (sync *OplogSyncer) RestAPI() {
 			Logs:        sync.replMetric.Get(),
 			LogsRepl:    sync.replMetric.Apply(),
 			LogsSuccess: sync.replMetric.Success(),
+			Tps:         sync.replMetric.Tps(),
 			Lsn: &MongoTime{TimestampMongo: utils.Int64ToString(sync.replMetric.LSN),
 				Time: Time{TimestampUnix: utils.ExtractMongoTimestamp(sync.replMetric.LSN),
 					TimestampTime: utils.TimestampToString(utils.ExtractMongoTimestamp(sync.replMetric.LSN))}},

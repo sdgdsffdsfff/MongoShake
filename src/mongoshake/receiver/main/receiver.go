@@ -1,23 +1,24 @@
 // this is an receiver example connect to different tunnels
 package main
 
-import(
+import (
 	"flag"
 	"fmt"
 	"os"
+	"syscall"
+	"errors"
+	"strconv"
 
 	"mongoshake/common"
 	"mongoshake/receiver/configure"
 	"mongoshake/tunnel"
-
-	LOG "github.com/vinllen/log4go"
-	"github.com/gugemichael/nimo4go"
-	"errors"
-	"syscall"
 	"mongoshake/receiver"
+
+	"github.com/gugemichael/nimo4go"
+	LOG "github.com/vinllen/log4go"
 )
 
-type Exit struct {Code int}
+type Exit struct{ Code int }
 
 func main() {
 	var err error
@@ -50,16 +51,24 @@ func main() {
 		crash(fmt.Sprintf("Conf.Options check failed: %s", err.Error()), -4)
 	}
 
-	utils.InitialLogger(conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose)
+	if err := utils.InitialLogger(conf.Options.LogDirectory, conf.Options.LogFileName, conf.Options.LogLevel, conf.Options.LogBuffer, *verbose); err != nil {
+		crash(fmt.Sprintf("initial log.dir[%v] log.name[%v] failed[%v].", conf.Options.LogDirectory,
+			conf.Options.LogFileName, err), -2)
+	}
 	nimo.Profiling(int(conf.Options.SystemProfile))
-	nimo.RegisterSignalForProfiling(syscall.SIGUSR2)
-	nimo.RegisterSignalForPrintStack(syscall.SIGUSR1, func(bytes []byte) {
-		LOG.Info(string(bytes))
-	})
+	signalProfile, _ := strconv.Atoi(utils.SIGNALPROFILE)
+	signalStack, _ := strconv.Atoi(utils.SIGNALSTACK)
+	if signalProfile > 0 {
+		nimo.RegisterSignalForProfiling(syscall.Signal(signalProfile)) // syscall.SIGUSR2
+		nimo.RegisterSignalForPrintStack(syscall.Signal(signalStack), func(bytes []byte) { // syscall.SIGUSR1
+			LOG.Info(string(bytes))
+		})
+	}
+
 
 	startup()
 
-	select{}
+	select {}
 }
 
 func sanitizeOptions() error {

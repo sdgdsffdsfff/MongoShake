@@ -13,14 +13,14 @@ import (
 	"mongoshake/collector/transform"
 	"mongoshake/common"
 
-	LOG "github.com/vinllen/log4go"
 	"github.com/gugemichael/nimo4go"
+	LOG "github.com/vinllen/log4go"
 	"github.com/vinllen/mgo"
 	"github.com/vinllen/mgo/bson"
 )
 
 const (
-	MAX_BUFFER_BYTE_SIZE = 16*1024*1024
+	MAX_BUFFER_BYTE_SIZE = 16 * 1024 * 1024
 )
 
 func IsShardingToSharding(fromIsSharding bool, toConn *utils.MongoConn) bool {
@@ -49,33 +49,36 @@ func IsShardingToSharding(fromIsSharding bool, toConn *utils.MongoConn) bool {
 }
 
 func StartDropDestCollection(nsSet map[utils.NS]bool, toConn *utils.MongoConn,
-	nsTrans *transform.NamespaceTransform) error {
+	nsTrans *transform.NamespaceTransform) (map[string]bool, error) {
+	nsExistedSet := make(map[string]bool)
 	for ns := range nsSet {
 		toNS := utils.NewNS(nsTrans.Transform(ns.Str()))
 		if !conf.Options.ReplayerCollectionDrop {
 			colNames, err := toConn.Session.DB(toNS.Database).CollectionNames()
 			if err != nil {
 				LOG.Critical("Get collection names of db %v of dest mongodb failed. %v", toNS.Database, err)
-				return err
+				return nil, err
 			}
 			for _, colName := range colNames {
 				if colName == ns.Collection {
-					LOG.Critical("ns %v to be synced already exists in dest mongodb", toNS)
-					return errors.New(fmt.Sprintf("ns %v to be synced already exists in dest mongodb", toNS))
+					//return errors.New(fmt.Sprintf("ns %v to be synced already exists in dest mongodb", toNS))
+					LOG.Warn("ns %v to be synced already exists in dest mongodb, collection and index info will not be synced", toNS)
+					nsExistedSet[ns.Str()] = true
+					break
 				}
 			}
-		}
-		err := toConn.Session.DB(toNS.Database).C(toNS.Collection).DropCollection()
-		if err != nil && err.Error() != "ns not found" {
-			LOG.Critical("Drop collection ns %v of dest mongodb failed. %v", toNS, err)
-			return errors.New(fmt.Sprintf("Drop collection ns %v of dest mongodb failed. %v", toNS, err))
+		} else {
+			err := toConn.Session.DB(toNS.Database).C(toNS.Collection).DropCollection()
+			if err != nil && err.Error() != "ns not found" {
+				return nil, LOG.Critical("Drop collection ns %v of dest mongodb failed. %v", toNS, err)
+			}
 		}
 	}
-	return nil
+	return nsExistedSet, nil
 }
 
 func StartNamespaceSpecSyncForSharding(csUrl string, toConn *utils.MongoConn,
-	nsTrans *transform.NamespaceTransform) error {
+	nsExistedSet map[string]bool, nsTrans *transform.NamespaceTransform) error {
 	LOG.Info("document syncer namespace spec for sharding begin")
 
 	var fromConn *utils.MongoConn
@@ -97,7 +100,7 @@ func StartNamespaceSpecSyncForSharding(csUrl string, toConn *utils.MongoConn,
 	dbSpecIter := fromConn.Session.DB("config").C("databases").Find(bson.M{}).Iter()
 	for dbSpecIter.Next(&dbSpecDoc) {
 		if dbSpecDoc.Partitioned {
-			if filterList.IterateFilter(dbSpecDoc.Db) {
+			if filterList.IterateFilter(dbSpecDoc.Db + ".$cmd") {
 				LOG.Debug("DB is filtered. %v", dbSpecDoc.Db)
 				continue
 			}
@@ -133,6 +136,10 @@ func StartNamespaceSpecSyncForSharding(csUrl string, toConn *utils.MongoConn,
 	// enable sharding for db
 	colSpecIter := fromConn.Session.DB("config").C("collections").Find(bson.M{}).Iter()
 	for colSpecIter.Next(&colSpecDoc) {
+		if _, ok := nsExistedSet[colSpecDoc.Ns]; ok {
+			LOG.Debug("Namespace spec sync is skipped. %v", colSpecDoc.Ns)
+			continue
+		}
 		if !colSpecDoc.Dropped {
 			if filterList.IterateFilter(colSpecDoc.Ns) {
 				LOG.Debug("Namespace is filtered. %v", colSpecDoc.Ns)
@@ -158,7 +165,7 @@ func StartNamespaceSpecSyncForSharding(csUrl string, toConn *utils.MongoConn,
 }
 
 func StartIndexSync(indexMap map[utils.NS][]mgo.Index, toUrl string,
-	nsTrans *transform.NamespaceTransform) (syncError error) {
+	nsExistedSet map[string]bool, nsTrans *transform.NamespaceTransform) (syncError error) {
 	type IndexNS struct {
 		ns        utils.NS
 		indexList []mgo.Index
@@ -170,13 +177,22 @@ func StartIndexSync(indexMap map[utils.NS][]mgo.Index, toUrl string,
 		return nil
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(len(indexMap))
+	var indexNeedSync int
+	for ns := range indexMap {
+		if _, ok := nsExistedSet[ns.Str()]; ok {
+			LOG.Info("document syncer index sync of ns[%v] is skipped", ns.Str())
+			continue
+		}
+		indexNeedSync++
+	}
 
 	collExecutorParallel := conf.Options.ReplayerCollectionParallel
 	namespaces := make(chan *IndexNS, collExecutorParallel)
 	nimo.GoRoutine(func() {
 		for ns, indexList := range indexMap {
+			if _, ok := nsExistedSet[ns.Str()]; ok {
+				continue
+			}
 			namespaces <- &IndexNS{ns: ns, indexList: indexList}
 		}
 	})
@@ -188,33 +204,37 @@ func StartIndexSync(indexMap map[utils.NS][]mgo.Index, toUrl string,
 	}
 	defer conn.Close()
 
-	for i := 0; i < collExecutorParallel; i++ {
-		nimo.GoRoutine(func() {
-			session := conn.Session.Clone()
-			defer session.Close()
+	if indexNeedSync > 0 {
+		var wg sync.WaitGroup
+		wg.Add(indexNeedSync)
+		for i := 0; i < collExecutorParallel; i++ {
+			nimo.GoRoutine(func() {
+				session := conn.Session.Clone()
+				defer session.Close()
 
-			for {
-				indexNs, ok := <-namespaces
-				if !ok {
-					break
-				}
-				ns := indexNs.ns
-				toNS := utils.NewNS(nsTrans.Transform(ns.Str()))
-
-				for _, index := range indexNs.indexList {
-					index.Background = false
-					if err = session.DB(toNS.Database).C(toNS.Collection).EnsureIndex(index); err != nil {
-						LOG.Warn("Create indexes for ns %v of dest mongodb failed. %v", ns, err)
+				for {
+					indexNs, ok := <-namespaces
+					if !ok {
+						break
 					}
-				}
-				LOG.Info("Create indexes for ns %v of dest mongodb finish", toNS)
+					ns := indexNs.ns
+					toNS := utils.NewNS(nsTrans.Transform(ns.Str()))
 
-				wg.Done()
-			}
-		})
+					for _, index := range indexNs.indexList {
+						index.Background = false
+						if err = session.DB(toNS.Database).C(toNS.Collection).EnsureIndex(index); err != nil {
+							LOG.Warn("Create indexes for ns %v of dest mongodb failed. %v", ns, err)
+						}
+					}
+					LOG.Info("Create indexes for ns %v of dest mongodb finish", toNS)
+
+					wg.Done()
+				}
+			})
+		}
+		wg.Wait()
 	}
 
-	wg.Wait()
 	close(namespaces)
 	LOG.Info("document syncer sync index finish")
 	return syncError
@@ -354,7 +374,7 @@ func (syncer *DBSyncer) collectionSync(collExecutorId int, ns utils.NS,
 			}
 			break
 		}
-		if bufferByteSize + len(doc.Data) > MAX_BUFFER_BYTE_SIZE || len(buffer) >= bufferSize {
+		if bufferByteSize+len(doc.Data) > MAX_BUFFER_BYTE_SIZE || len(buffer) >= bufferSize {
 			colExecutor.Sync(buffer)
 			buffer = make([]*bson.Raw, 0, bufferSize)
 			bufferByteSize = 0
